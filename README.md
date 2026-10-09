@@ -1,4 +1,4 @@
-﻿# my-chat
+﻿# FlowChat
 
 AI 聊天应用原型，基于 Next.js + Supabase + Clerk 构建，支持流式对话、会话持久化和基础安全治理，适合用于个人项目展示、面试演示及公开仓库展示。
 
