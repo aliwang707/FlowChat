@@ -15,17 +15,21 @@ export type Message = {
 
 export type ChatStatus = 'idle' | 'loading' | 'canceled' | 'error';
 
+// ========== Hook 主函数 ==========
 export function useChatStream(
   currentSessionId: string | null,
   onSessionCreated: (id: string) => void,
   onRefreshSessions: () => void
 ) {
+  // ---------- 1. State：会被渲染用到的响应式数据 ----------
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
 
+  // ---------- 2. Ref：跨越闭包、不需要触发渲染的数据 ----------
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentAiIdRef = useRef<string | null>(null);
@@ -36,8 +40,8 @@ export function useChatStream(
   const throttledFlushRef = useRef<ReturnType<typeof throttle> | null>(null);
   const hasReceivedFirstTokenRef = useRef(false);
   const messagesRef = useRef<Message[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-
+  
+  // ---------- 3. useEffect：副作用 ----------
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
@@ -63,17 +67,9 @@ export function useChatStream(
       );
       requestAnimationFrame(scrollToBottom);
     }, 10);
+
     return () => throttledFlushRef.current?.cancel();
   }, [scrollToBottom]);
-
-  // Escape 取消
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && loading) handleCancel();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [loading]);
 
   const clearTimeoutRef = () => {
     if (timeoutRef.current) {
@@ -83,28 +79,31 @@ export function useChatStream(
   };
 
   // 统一结束函数：无论正常、取消、超时都调用
-  // 统一结束函数：无论正常、取消、超时都调用
-  const finishAiReply = (extraText?: string) => {
-    if (isFinishRef.current) return;
-    const id = currentAiIdRef.current;
-    if (id) {
-      setMessages(prev =>
-        prev.map(msg =>
-          msg.id === id
-            ? {
-              ...msg,
-              content: msg.content + (extraText ? `\n\n${extraText}` : ''),
-              isLoading: false,
-            }
-            : msg
-        )
-      );
-      currentAiIdRef.current = null;
-      isFinishRef.current = true;
-      onRefreshSessions();
-      setIsStreaming(false);
-    }
-  };
+  // 用 useCallback 包裹，避免被 resetChat 等外层 Hook 锁死旧引用
+  const finishAiReply = useCallback(
+    (extraText?: string) => {
+      if (isFinishRef.current) return;
+      const id = currentAiIdRef.current;
+      if (id) {
+        setMessages(prev =>
+          prev.map(msg =>
+            msg.id === id
+              ? {
+                  ...msg,
+                  content: msg.content + (extraText ? `\n\n${extraText}` : ''),
+                  isLoading: false,
+                }
+              : msg
+          )
+        );
+        currentAiIdRef.current = null;
+        isFinishRef.current = true;
+        onRefreshSessions();
+        setIsStreaming(false);
+      }
+    },
+    [onRefreshSessions]
+  );
 
   // 清洗消息
   const cleanMessages = (raw: Message[]) => {
@@ -114,19 +113,7 @@ export function useChatStream(
       .map(m => ({ role: m.role, content: m.content }));
   };
 
-  // 错误消息插入
-  const pushSystemError = (content: string) => {
-    setMessages(prev => {
-      const last = prev[prev.length - 1];
-      if (last && last.role === 'system' && last.error) return prev;
-      return [
-        ...prev,
-        { id: `err-${Date.now()}`, role: 'system', content, error: true },
-      ];
-    });
-  };
-
-  // ---------- 发送主逻辑 ----------
+  // ========== 4. 发送消息主流程 ==========
   const handleSubmit = useCallback(
     async (overrideText?: string) => {
       const text = (overrideText ?? input).trim();
@@ -137,7 +124,6 @@ export function useChatStream(
       isFinishRef.current = false;
       hasReceivedFirstTokenRef.current = false;
       setIsStreaming(false);
-
       tokenBufferRef.current = '';
       throttledFlushRef.current?.cancel();
       setError(null);
@@ -239,9 +225,10 @@ export function useChatStream(
                 repeatCount = 0;
                 lastToken = token;
               }
+              // 不再用 AbortError，改用自定义标识，避免误判为超时
               if (totalChars > MAX_CHARS || repeatCount > MAX_REPEAT) {
                 controller.abort();
-                throw new Error('AbortError');
+                throw new Error('AI_REPLY_TOO_LONG');
               }
 
               // 第一个 token 立即更新
@@ -268,7 +255,13 @@ export function useChatStream(
                 onRefreshSessions();
               }
             } catch (e) {
-              if (e instanceof Error && e.message === 'AbortError') throw e;
+              // 只把 AbortError 和超长标识向外抛，其他 JSON 解析错误静默忽略
+              if (
+                e instanceof Error &&
+                (e.message === 'AbortError' || e.message === 'AI_REPLY_TOO_LONG')
+              ) {
+                throw e;
+              }
             }
           }
         }
@@ -284,15 +277,18 @@ export function useChatStream(
         setIsStreaming(false);
 
         if (manualCancelRef.current) {
-          // 已在 handleCancel 中处理，这里只重置状态
+          // 用户主动取消：已在 handleCancel 中处理，这里只重置状态
           setStatus('canceled');
+        } else if (err.message === 'AI_REPLY_TOO_LONG') {
+          // ai输出超长
+          finishAiReply('[回复过长，已自动中断]');
+          setStatus('error');
+          setError('回复内容过长，已自动中止');
         } else if (err.name === 'AbortError' || err.message === 'AbortError') {
-          if (status !== 'error') {
-            // 若未通过超时定时器处理（可能被取消），则在这里处理
-            finishAiReply('[生成超时]');
-            setStatus('error');
-            setError('请求超时，请稍后重试');
-          }
+          // 被动中止：一定是超时（因为用户主动取消已在上面分支处理）
+          finishAiReply('[生成超时]');
+          setStatus('error');
+          setError('请求超时，请稍后重试');
         } else {
           // 其他错误
           setStatus('error');
@@ -306,10 +302,11 @@ export function useChatStream(
         setIsStreaming(false);
       }
     },
-    [input, loading, status, currentSessionId, onSessionCreated, onRefreshSessions]
+    // 依赖项：所有会被闭包捕获的外部变量
+    [input, loading, currentSessionId, onSessionCreated, onRefreshSessions, finishAiReply, scrollToBottom]
   );
 
-  // ---------- 取消 ----------
+  // ---------- 5. 用户主动取消 ----------
   const handleCancel = useCallback(() => {
     if (!abortControllerRef.current) return;
 
@@ -319,17 +316,14 @@ export function useChatStream(
 
     const id = currentAiIdRef.current;
     if (id) {
-      // 查找当前 AI 消息的内容
       const targetMsg = messagesRef.current.find(m => m.id === id);
-      // 如果内容很短（少于 10 个字符，可以调整阈值），直接删除这条消息
       if (targetMsg && targetMsg.content.length < 10) {
         setMessages(prev => prev.filter(m => m.id !== id));
       } else {
-        // 否则追加停止标记，并关闭加载状态
         setMessages(prev =>
           prev.map(msg =>
             msg.id === id
-              ? { ...msg, content: msg.content + '\n\n[已停止生成]', isLoading: false }
+              ? { ...msg, content: msg.content + '\n\n[已取消生成]', isLoading: false }
               : msg
           )
         );
@@ -337,7 +331,6 @@ export function useChatStream(
       currentAiIdRef.current = null;
       isFinishRef.current = true;
     } else {
-      // 极短时间取消，插入系统提示
       setMessages(prev => [
         ...prev,
         { id: `cancel-${Date.now()}`, role: 'system', content: '已取消生成', error: false },
@@ -353,7 +346,16 @@ export function useChatStream(
     scrollToBottom();
   }, [scrollToBottom, onRefreshSessions]);
 
-  // ---------- 重置 ----------
+  // ========== 6. 按 ESC 键取消 ==========
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && loading) handleCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [loading, handleCancel]);
+
+  // ========== 7. 重置聊天状态（切换会话 / 新建会话时调用） ==========
   const resetChat = useCallback(() => {
     setStatus('idle');
     setError(null);
@@ -363,8 +365,9 @@ export function useChatStream(
     clearTimeoutRef();
     throttledFlushRef.current?.flush();
     finishAiReply(); // 安全结束
-  }, []);
+  }, [finishAiReply]);
 
+  // ========== 8. 对外暴露的 API ==========
   return {
     input,
     setInput,

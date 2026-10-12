@@ -10,11 +10,9 @@ type DarkModeReturn = {
 export function useDarkMode(): DarkModeReturn {
   const [isDark, setIsDark] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
-    // 优先读取 localStorage 中保存的主题
     const stored = localStorage.getItem('theme');
     if (stored === 'dark') return true;
     if (stored === 'light') return false;
-    // 否则跟随系统
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
 

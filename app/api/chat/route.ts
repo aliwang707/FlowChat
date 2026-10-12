@@ -1,19 +1,31 @@
 /**
- * 该接口负责校验会话归属、保存消息记录，并以 SSE 方式将模型输出按 token 逐步返回。
- * 设计目标是尽量减少长回复等待时间，同时保持后端对用户身份、输入长度和调用频率的控制。
+ * 处理聊天请求，串联身份认证、参数校验、AI 流式调用和数据库持久化
+ * 技术关键词: Next.js App Router, Server-Sent Events (SSE), ReadableStream, Zod, Supabase
  */
 import { env, supabase } from "@/lib/supabase";
 import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { ChatRequestSchema } from "@/lib/validation";
 import { rateLimit } from "@/lib/rate-limit";
+import { fetchAIResponse } from "@/lib/ai-service";
+import { insertAssistantMessage, tryUpdateSessionTitle, saveUserMessage } from "@/lib/session-helpers";
+import { createSSEResponse } from "@/lib/sse-response";
 
+// 首字节超时阈值（从环境变量读取，默认 60 秒）
 const FIRST_BYTE_TIMEOUT = Number(process.env.AI_FIRST_BYTE_TIMEOUT_MS || 60000);
+
+// Vercel 函数最大执行时长（60 秒，与超时阈值对齐）
 export const maxDuration = 60;
 
+// 限制 AI 最大生成 token 数，防止回复过长导致 Vercel 函数超时
+// 同时将硬编码的 1024 提取为常量，便于统一调整
+const MAX_TOKENS_LIMIT = Math.min(env.AI_MAX_TOKENS || 1024, 1024); 
+
 export async function POST(request: NextRequest) {
+  // 超时定时器句柄，用于清理
   let firstByteTimeoutId: NodeJS.Timeout | null = null;
 
+  // 统一清理超时定时器（避免重复调用）
   const clearFirstByteTimeout = () => {
     if (firstByteTimeoutId) {
       clearTimeout(firstByteTimeoutId);
@@ -22,390 +34,155 @@ export async function POST(request: NextRequest) {
   };
 
   try {
+    // ----- 1. 身份认证（Clerk）-----
     const { userId } = await auth();
     if (!userId) {
       return NextResponse.json({ error: "请先登录" }, { status: 401 });
     }
 
+    // ----- 2. 限流检查（防刷）-----
+    // 基于内存 Map 的滑动窗口限流，单实例有效
     if (!rateLimit(userId)) {
-      return NextResponse.json(
-        { error: "请求过于频繁，请稍后再试" },
-        { status: 429 }
-      );
+      return NextResponse.json({ error: "请求过于频繁，请稍后再试" }, { status: 429 });
     }
 
+    // ----- 3. 解析请求体 -----
     let rawBody: unknown;
     try {
       rawBody = await request.json();
     } catch {
-      return NextResponse.json(
-        { error: "JSON请求格式错误" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "JSON请求格式错误" }, { status: 400 });
     }
 
+    // ----- 4. Zod 参数校验（双重保险）-----
+    // 使用 safeParse 避免 try-catch，校验失败时直接返回 400。
+    // 双重保险：前端 TS 类型 + 后端 Zod Schema，防止脏数据进入业务逻辑。
     const validation = ChatRequestSchema.safeParse(rawBody);
     if (!validation.success) {
+      // 将所有校验错误拼成一条可读字符串，方便调试
       const errorMsg = validation.error.issues
         .map((i) => `${i.path.join(".")}:${i.message}`)
         .join("; ");
-      return NextResponse.json(
-        { error: `请求参数校验失败：${errorMsg}` },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: `请求参数校验失败：${errorMsg}` }, { status: 400 });
     }
 
+    // ----- 5. 提取核心数据 -----
     const { messages, sessionId } = validation.data;
-    const userMessage = messages[messages.length - 1];
+    //获取最后一条消息，确保是用户发的
+    const userMessage = messages.at(-1);
+    // 只带最近 20 条上下文，防止 token 超限
     const recentMessages = messages.slice(-20);
 
-    if (userMessage.role !== "user") {
-      return NextResponse.json(
-        { error: "最后一条消息必须来自用户" },
-        { status: 400 }
-      );
+    // 安全兜底：确保最后一条消息确实是用户发的（防伪造请求）
+    if (userMessage?.role !== "user") {
+      return NextResponse.json({ error: "最后一条消息必须来自用户" }, { status: 400 });
     }
 
-    let activeSessionId = sessionId;
+    // ----- 6. 会话管理（创建 / 归属校验）-----
+    let activeSessionId = await resolveSession(userId, sessionId);
 
-    if (!activeSessionId) {
-      const { data: newSession, error: sessionError } = await supabase
-        .from("sessions")
-        .insert([
-          {
-            user_id: userId,
-            title: null,
-            updated_at: new Date().toISOString(),
-          },
-        ])
-        .select("id")
-        .single();
+    // ----- 7. 保存用户消息到数据库 -----
+    await saveUserMessage(activeSessionId, userMessage.content);
 
-      if (sessionError || !newSession) {
-        console.error("创建会话失败:", sessionError);
-        return NextResponse.json(
-          { error: "创建会话失败" },
-          { status: 500 }
-        );
-      }
-      activeSessionId = newSession.id;
-    } else {
-      // 校验会话归属
-      const { data: sessionCheck, error: sessionErr } = await supabase
-        .from("sessions")
-        .select("id")
-        .eq("id", activeSessionId)
-        .eq("user_id", userId)
-        .single();
+    // ----- 8. 准备流式处理上下文 -----
+    const abortController = new AbortController(); // 用于取消AI请求
+    let fullAiReply = "";// 累积完整回复内容，用于最后存库
+    let hasSaved = false;// 防止已保存后重复调用
+    let savePromise: Promise<void> | null = null;//防止并发插入
+    const sessionIdForSave = activeSessionId;
 
-      if (sessionErr || !sessionCheck) {
-        return NextResponse.json(
-          { error: "会话不存在或无权访问" },
-          { status: 403 }
-        );
-      }
-
-      const { error: updateError } = await supabase
-        .from("sessions")
-        .update({ updated_at: new Date().toISOString() })
-        .eq("id", activeSessionId)
-        .eq("user_id", userId);
-      if (updateError) {
-        console.error("更新会话时间失败:", updateError);
-      }
-    }
-
-    // 保存用户消息
-    const { error: userMsgError } = await supabase
-      .from("messages")
-      .insert([
-        {
-          session_id: activeSessionId,
-          role: "user",
-          content: userMessage.content,
-        },
-      ]);
-
-    if (userMsgError) {
-      console.error("保存用户消息失败:", userMsgError);
-      return NextResponse.json(
-        { error: "保存消息失败" },
-        { status: 500 }
-      );
-    }
-
-    const abortController = new AbortController();
-
-    // 首字节超时定时器
+    // ----- 9. 首字节超时定时器 -----
+    // 如果 AI 接口 60 秒没返回第一个 token，主动中断
     firstByteTimeoutId = setTimeout(() => {
       console.warn("首字节超时，终止请求");
+      clearFirstByteTimeout();
       abortController.abort();
     }, FIRST_BYTE_TIMEOUT);
 
-    let isCancelled = false;
-
-    // 客户端取消时触发
+    // ----- 10. 监听客户端取消（用户点取消 / 关闭页面）-----
     request.signal.addEventListener("abort", () => {
-      isCancelled = true;
       clearFirstByteTimeout();
       abortController.abort();
-      // 如果已有内容，追加中断标记，以便保存时带上
-      if (fullAiReply && fullAiReply.length > 0) {
+      // 如果已有内容，追加中断标记，告知用户内容被截断
+      if (fullAiReply) {
         fullAiReply += "\n\n[用户已中断]";
       }
     });
 
+    // ----- 11. 调用 SiliconFlow AI 接口 -----
     let response;
     try {
-      response = await fetch(`${env.SILICONFLOW_BASE_URL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${env.SILICONFLOW_API_KEY}`,
-          "Accept-Encoding": "identity",
-        },
-        body: JSON.stringify({
-          model: env.AI_MODEL,
-          messages: [
-            {
-              role: "system",
-              content: "你是一个专业、友好的AI助手，请用中文回答。",
-            },
-            ...recentMessages,
-          ],
-          stream: true,
-          max_tokens: Math.min(env.AI_MAX_TOKENS, 1024),
-          temperature: env.AI_TEMPERATURE,
-          top_p: env.AI_TOP_P,
-        }),
+      const aiMessages = [
+        { role: "system", content: "你是一个专业、友好的AI助手，请用中文回答。" },
+        ...recentMessages,
+      ];
+      response = await fetchAIResponse({
+        messages: aiMessages,
         signal: abortController.signal,
+        maxTokens: MAX_TOKENS_LIMIT,
       });
     } catch (fetchError: any) {
       clearFirstByteTimeout();
       console.error("AI 服务网络错误:", fetchError);
-      return NextResponse.json(
-        { error: "AI 服务网络错误" },
-        { status: 502 }
-      );
+      return NextResponse.json({ error: "AI 服务网络错误" }, { status: 502 });
     }
 
+    // ----- 12. 检查 AI 响应状态 -----
     if (!response.ok) {
       clearFirstByteTimeout();
       const errorText = await response.text();
       console.error(`AI 服务返回错误 ${response.status}，详情已脱敏`);
-      if (process.env.NODE_ENV === "development") {
-        console.error(errorText.slice(0, 200));
-      }
-      return NextResponse.json(
-        { error: `AI 服务暂时不可用 (${response.status})` },
-        { status: 502 }
-      );
+      if (process.env.NODE_ENV === "development") console.error(errorText.slice(0, 200));//开发环境打印 AI 接口原始报错（限制长度），生产环境隐藏，用于调试同时保护信息。
+      return NextResponse.json({ error: `AI 服务暂时不可用 (${response.status})` }, { status: 502 });
     }
 
+    // 防止 response.body 为 null，提前返回（TS 类型收窄）
     if (!response.body) {
       clearFirstByteTimeout();
-      return NextResponse.json(
-        { error: "无法获取响应流" },
-        { status: 502 }
-      );
+      return NextResponse.json({ error: "无法获取响应流" }, { status: 502 });
     }
 
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-    let fullAiReply = "";
-    let hasSaved = false;
-    const sessionIdForSave = activeSessionId;
+    const responseBody = response.body; // 此处的类型已收窄为非 null
 
-    const saveAiReply = async () => {
-      // 取消时也保存已有内容，fullAiReply 已追加 [用户已中断] 标记
-      if (hasSaved || !fullAiReply || !sessionIdForSave) {
-        return;
-      }
-      try {
-        const { error } = await supabase
-          .from("messages")
-          .insert([
-            {
-              session_id: sessionIdForSave,
-              role: "assistant",
-              content: fullAiReply,
-            },
-          ]);
-        if (error) {
-          console.error("保存AI消息失败:", error);
-        } else {
-          hasSaved = true;
 
-          // 更新会话标题（仅在标题为空时更新）
-          try {
-            const { data: sessionData, error: fetchError } = await supabase
-              .from("sessions")
-              .select("title")
-              .eq("id", sessionIdForSave)
-              .single();
+    //----- 13. 带锁的保存函数（防竞态重复插入） -----
+    // 场景：start 正常结束、catch 异常、cancel 回调都可能触发保存
+    // 用 savePromise 作为“锁”，只让第一次调用执行，后续复用
+    //防止并发插入导致数据重复。
+    const saveAiReply = () => {
+      if (hasSaved || !fullAiReply || !sessionIdForSave) return;
+      // 条件过滤：已存 / 无内容 / 无会话ID → 直接返回
 
-            if (!fetchError && sessionData && !sessionData.title) {
-              const summary =
-                fullAiReply.replace(/\n/g, " ").slice(0, 30) +
-                (fullAiReply.length > 30 ? "..." : "");
-              const { error: updateTitleError } = await supabase
-                .from("sessions")
-                .update({ title: summary })
-                .eq("id", sessionIdForSave);
-              if (updateTitleError) {
-                console.error("更新会话标题失败:", updateTitleError);
-              }
-            }
-          } catch (titleError) {
-            console.error("更新标题异常:", titleError);
-          }
+      // 核心防竞态：如果已有正在执行的保存任务，直接复用
+      savePromise ??= (async () => {
+        try {
+          // 1. 存 AI 回复到数据库
+          await insertAssistantMessage(sessionIdForSave, fullAiReply);
+          // 2. 如果标题为空，自动生成标题
+          await tryUpdateSessionTitle(sessionIdForSave, fullAiReply);
+          hasSaved = true; // 标记已存
+        } catch (saveError) {
+          console.error("保存AI消息抛出异常:", saveError);
+        } finally {
+          savePromise = null;// 解锁，允许下次保存
         }
-      } catch (saveError) {
-        console.error("保存AI消息抛出异常:", saveError);
-      }
+      })();
+
+      return savePromise;
     };
 
-    const readableStream = new ReadableStream({
-      async start(controller) {
-        const reader = response.body!.getReader();
-        let buffer = "";
-        let isFirstToken = true;
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data:")) continue;
-              const jsonStr = trimmed.slice(5).trim();
-              if (jsonStr === "[DONE]") continue;
-
-              try {
-                const parsed = JSON.parse(jsonStr);
-
-                // AI 返回业务错误，立即终止流
-                if (parsed.error) {
-                  console.error("AI 返回错误:", parsed.error);
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify({
-                        token: `AI 服务错误: ${parsed.error.message || "未知错误"}`,
-                      })}\n\n`
-                    )
-                  );
-                  break;
-                }
-
-                if (!parsed.choices || parsed.choices.length === 0) {
-                  console.warn("choices 为空，跳过此 chunk");
-                  continue;
-                }
-
-                const content = parsed.choices[0]?.delta?.content || "";
-                if (!content) continue;
-
-                if (isFirstToken) {
-                  clearFirstByteTimeout();
-                  isFirstToken = false;
-                }
-
-                fullAiReply += content;
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({
-                      token: content,
-                      sessionId: sessionIdForSave,
-                    })}\n\n`
-                  )
-                );
-              } catch (parseError) {
-                console.warn("JSON 解析失败，原始数据:", jsonStr);
-              }
-            }
-          }
-
-          // 处理剩余 buffer
-          if (buffer) {
-            const tailLines = buffer.split("\n");
-            for (const line of tailLines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data:")) continue;
-              const jsonStr = trimmed.slice(5).trim();
-              if (jsonStr === "[DONE]") continue;
-              try {
-                const parsed = JSON.parse(jsonStr);
-                if (parsed.choices && parsed.choices.length > 0) {
-                  const content = parsed.choices[0]?.delta?.content || "";
-                  if (content) {
-                    fullAiReply += content;
-                    controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify({
-                          token: content,
-                          sessionId: sessionIdForSave,
-                        })}\n\n`
-                      )
-                    );
-                  }
-                }
-              } catch (e) {
-                /* ignore */
-              }
-            }
-          }
-
-          // 保存 AI 回复
-          await saveAiReply();
-          controller.close();
-        } catch (err: any) {
-          clearFirstByteTimeout();
-          console.error("流处理错误:", err);
-          // 尝试保存已有内容
-          await saveAiReply();
-          try {
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({
-                  token: "\n\n[生成已中断]",
-                })}\n\n`
-              )
-            );
-            controller.close();
-          } catch {
-            controller.error(err);
-          }
-        }
-      },
-      cancel() {
-        clearFirstByteTimeout();
-        saveAiReply().finally(() => {
-          abortController.abort();
-        });
-      },
+    // ----- 14. 创建 SSE 流并返回响应 ----
+    return createSSEResponse({
+      responseBody,
+      sessionId: sessionIdForSave,
+      saveAiReply,
+      clearFirstByteTimeout,
     });
-
-    return new Response(readableStream, {
-      headers: {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-        "Content-Encoding": "identity",
-      },
-    });
-  } catch (error: any) {
+  }catch (error: any) {
+    // ----- 15. 全局异常兜底 -----
     clearFirstByteTimeout();
     if (error.name === "AbortError") {
-      return NextResponse.json(
-        { error: "请求超时或被取消" },
-        { status: 408 }
-      );
+      return NextResponse.json({ error: "请求超时或被取消" }, { status: 408 });
     }
     console.error("未捕获的异常:", error);
     console.error("堆栈:", error.stack);
@@ -413,9 +190,56 @@ export async function POST(request: NextRequest) {
       {
         error: "服务器内部错误",
         detail: error.message,
+        // 仅在开发环境返回堆栈，生产环境隐藏
         stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
       },
       { status: 500 }
     );
   }
+}
+
+    
+
+/**
+ * 辅助函数：会话解析（获取或创建）
+ * 逻辑：无 sessionId → 新建；有 sessionId → 校验归属 + 更新时间
+ */
+async function resolveSession(
+  userId: string,
+  sessionId?: string
+): Promise<string> {
+  if (!sessionId) {
+    // 新建会话
+    const { data: newSession, error } = await supabase
+      .from("sessions")
+      .insert([{ user_id: userId, title: null, updated_at: new Date().toISOString() }])
+      .select("id")
+      .single();
+    if (error || !newSession) {
+      console.error("创建会话失败:", error);
+      throw new Error("创建会话失败");
+    }
+    return newSession.id;
+  }
+
+  // 校验归属
+  const { data: sessionCheck, error: checkErr } = await supabase
+    .from("sessions")
+    .select("id")
+    .eq("id", sessionId)
+    .eq("user_id", userId)
+    .single();
+  if (checkErr || !sessionCheck) {
+    throw new Error("会话不存在或无权访问");
+  }
+
+  // 更新时间（侧边栏排序用）
+  const { error: updateError } = await supabase
+    .from("sessions")
+    .update({ updated_at: new Date().toISOString() })
+    .eq("id", sessionId)
+    .eq("user_id", userId);
+  if (updateError) console.error("更新会话时间失败:", updateError);
+
+  return sessionId;
 }

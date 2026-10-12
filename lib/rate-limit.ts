@@ -6,6 +6,7 @@ const RATE_LIMIT_WINDOW = 60_000;
 const RATE_LIMIT_MAX = 20;
 const requestLog = new Map<string, { count: number; resetTime: number }>();
 
+//key是userId
 export function rateLimit(key: string): boolean {
   const now = Date.now();
   const record = requestLog.get(key);

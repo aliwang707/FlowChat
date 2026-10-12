@@ -1,0 +1,65 @@
+import { StreamProcessor } from "@/lib/stream-processor";
+
+type SSEOptions = {
+  responseBody: ReadableStream<Uint8Array>;
+  sessionId: string;
+  saveAiReply: () => Promise<void> | void;
+  clearFirstByteTimeout: () => void;
+};
+
+export function createSSEResponse({
+  responseBody,
+  sessionId,
+  saveAiReply,
+  clearFirstByteTimeout,
+}: SSEOptions): Response {
+  const encoder = new TextEncoder();
+
+  const readableStream = new ReadableStream({
+    async start(controller) {
+      const processor = new StreamProcessor(responseBody, {
+        onFirstByte: clearFirstByteTimeout,
+        onToken: (token: string) => {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ token, sessionId })}\n\n`
+            )
+          );
+        },
+        onComplete: async () => {
+          await saveAiReply();
+          controller.close();
+        },
+        onError: async (err: Error) => {
+          clearFirstByteTimeout();
+          console.error("流处理错误:", err);
+          await saveAiReply();
+          try {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ token: "\n\n[生成已中断]" })}\n\n`
+              )
+            );
+            controller.close();
+          } catch {
+            controller.error(err);
+          }
+        },
+      });
+      await processor.process();
+    },
+    cancel() {
+      // 取消由外部的 AbortController 控制
+    },
+  });
+
+  return new Response(readableStream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Content-Encoding": "identity",
+    },
+  });
+}

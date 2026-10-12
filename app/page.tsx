@@ -31,7 +31,7 @@ export default function Home() {
     (id) => {
       setCurrentSessionId(id);
       localStorage.setItem('currentChatSessionId', id);
-      handleRefreshSessions(); // 【关键】立即刷新，确保新会话出现在列表中
+      handleRefreshSessions(); 
     },
     handleRefreshSessions
   );
@@ -46,7 +46,6 @@ export default function Home() {
   if (!isSignedIn) return;
   (async () => {
     await loadSessions(true);
-    // 登录后默认进入新会话，不加载任何历史消息
     createNewSession();
     setMessages([]);
   })();
@@ -162,11 +161,6 @@ export default function Home() {
             {loading && !isStreaming && (
               <div className="animate-pulse p-4 text-gray-500 dark:text-gray-400">
                 🤖 正在思考中...
-              </div>
-            )}
-            {status === 'canceled' && (
-              <div className="p-4 text-gray-400 dark:text-gray-500 text-sm">
-                ⏹️ 已停止生成
               </div>
             )}
             {status === 'error' && (
