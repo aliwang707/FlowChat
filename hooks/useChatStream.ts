@@ -198,72 +198,86 @@ export function useChatStream(
         let repeatCount = 0;
         const MAX_CHARS = 15000;
         const MAX_REPEAT = 10;
+        let lineBuffer = ''; // 跨 chunk 拼接 SSE 行，防止行在 TCP 边界被截断
+
+        const processLine = (line: string) => {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) return;
+          const jsonStr = trimmed.slice(5).trim();
+          if (jsonStr === '[DONE]') return;
+
+          try {
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.error) {
+              throw new Error(parsed.error.message || 'AI 服务返回错误');
+            }
+            const token = parsed.token;
+            if (!token) return;
+
+            totalChars += token.length;
+            if (token === lastToken) {
+              repeatCount++;
+            } else {
+              repeatCount = 0;
+              lastToken = token;
+            }
+            // 不再用 AbortError，改用自定义标识，避免误判为超时
+            if (totalChars > MAX_CHARS || repeatCount > MAX_REPEAT) {
+              controller.abort();
+              throw new Error('AI_REPLY_TOO_LONG');
+            }
+
+            // 第一个 token 立即更新
+            if (!hasReceivedFirstTokenRef.current) {
+              hasReceivedFirstTokenRef.current = true;
+              setIsStreaming(true);
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === currentAiIdRef.current
+                    ? { ...m, content: m.content + token }
+                    : m
+                )
+              );
+              tokenBufferRef.current = '';
+              return;
+            }
+
+            tokenBufferRef.current += token;
+            throttledFlushRef.current?.();
+
+            if (parsed.sessionId && !receivedSessionId) {
+              receivedSessionId = parsed.sessionId;
+              onSessionCreated(parsed.sessionId);
+              onRefreshSessions();
+            }
+          } catch (e) {
+            // 只把 AbortError 和超长标识向外抛，其他 JSON 解析错误静默忽略
+            if (
+              e instanceof Error &&
+              (e.message === 'AbortError' || e.message === 'AI_REPLY_TOO_LONG')
+            ) {
+              throw e;
+            }
+          }
+        };
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const lines = value.split('\n');
+          lineBuffer += value;
+          const lines = lineBuffer.split('\n');
+          // 最后一段可能是不完整行（没有以 \n 结尾），留在 buffer 里下次拼接
+          lineBuffer = lines.pop() ?? '';
           for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) continue;
-            const jsonStr = trimmed.slice(5).trim();
-            if (jsonStr === '[DONE]') continue;
-
-            try {
-              const parsed = JSON.parse(jsonStr);
-              if (parsed.error) {
-                throw new Error(parsed.error.message || 'AI 服务返回错误');
-              }
-              const token = parsed.token;
-              if (!token) continue;
-
-              totalChars += token.length;
-              if (token === lastToken) {
-                repeatCount++;
-              } else {
-                repeatCount = 0;
-                lastToken = token;
-              }
-              // 不再用 AbortError，改用自定义标识，避免误判为超时
-              if (totalChars > MAX_CHARS || repeatCount > MAX_REPEAT) {
-                controller.abort();
-                throw new Error('AI_REPLY_TOO_LONG');
-              }
-
-              // 第一个 token 立即更新
-              if (!hasReceivedFirstTokenRef.current) {
-                hasReceivedFirstTokenRef.current = true;
-                setIsStreaming(true);
-                setMessages(prev =>
-                  prev.map(m =>
-                    m.id === currentAiIdRef.current
-                      ? { ...m, content: m.content + token }
-                      : m
-                  )
-                );
-                tokenBufferRef.current = '';
-                continue;
-              }
-
-              tokenBufferRef.current += token;
-              throttledFlushRef.current?.();
-
-              if (parsed.sessionId && !receivedSessionId) {
-                receivedSessionId = parsed.sessionId;
-                onSessionCreated(parsed.sessionId);
-                onRefreshSessions();
-              }
-            } catch (e) {
-              // 只把 AbortError 和超长标识向外抛，其他 JSON 解析错误静默忽略
-              if (
-                e instanceof Error &&
-                (e.message === 'AbortError' || e.message === 'AI_REPLY_TOO_LONG')
-              ) {
-                throw e;
-              }
-            }
+            processLine(line);
           }
+        }
+
+        // 流结束时，若残留一行未以 \n 结尾，也尝试处理一次
+        if (lineBuffer.trim()) {
+          processLine(lineBuffer);
+          lineBuffer = '';
         }
 
         // 正常结束流

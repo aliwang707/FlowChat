@@ -17,11 +17,22 @@ vi.mock('@/lib/rate-limit', () => ({
   rateLimit: vi.fn(),
 }));
 
-vi.mock('@/lib/supabase', () => ({
-  supabase: {
-    from: vi.fn(),
-  },
-}));
+vi.mock('@/lib/supabase', async (importOriginal) => {
+  // 用 importOriginal 保留真实模块的其它导出，仅覆盖 env 和 supabase
+  // 避免 lib/supabase.ts 在模块加载时因缺少环境变量而 throw
+  const actual = await importOriginal<typeof import('@/lib/supabase')>().catch(() => ({
+    env: { AI_MAX_TOKENS: 1024 } as any,
+    supabase: { from: vi.fn() } as any,
+  }));
+  return {
+    ...actual,
+    env: { AI_MAX_TOKENS: 1024, ...actual.env },
+    supabase: {
+      ...(actual.supabase ?? {}),
+      from: vi.fn(),
+    },
+  };
+});
 
 import { auth } from '@clerk/nextjs/server';
 import { rateLimit } from '@/lib/rate-limit';
