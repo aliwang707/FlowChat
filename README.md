@@ -1,10 +1,17 @@
 ﻿# FlowChat
 
-AI 聊天应用原型，基于 Next.js + Supabase + Clerk 构建，支持流式对话、会话持久化和基础安全治理，适合用于个人项目展示、面试演示及公开仓库展示。
+一个基于 Next.js 的全栈 AI 聊天应用，支持 SSE 流式对话、多会话管理、Clerk 登录鉴权、Supabase 消息持久化与 Vercel 部署。
+
+- 🔗 Demo: https://flowchat.boleit.cn/ （自定义域名已绑定）
+- 📦 仓库: https://github.com/aliwang707/FlowChat
+- 📄 排错记录: [docs/troubleshooting.md](docs/troubleshooting.md)
 
 ## 项目简介
 
-FlowChat 是一个以聊天为核心的 Web 应用，目标是提供近实时的 AI 对话体验，并将会话内容、访问控制和接口安全一并纳入工程设计。它适合用于个人助手、知识问答、聊天机器人原型等场景，也可以作为 Next.js + AI 应用的代码示例进行展示。
+FlowChat 是一个以聊天为核心的全栈 Web 应用，目标是提供近实时的 AI 对话体验，并将会话内容、访问控制、接口安全与生产部署一并纳入工程设计。
+
+项目适合用于个人助手、知识问答、聊天机器人原型等场景，也可以作为 Next.js + AI 应用的学习与展示项目。
+
 
 ## 界面预览
 
@@ -16,10 +23,15 @@ FlowChat 是一个以聊天为核心的 Web 应用，目标是提供近实时的
 ## 核心功能
 
 - 流式 AI 对话：使用 Server-Sent Events 逐 token 返回模型输出，提升响应体验
-- 会话管理：支持创建、切换、删除多个聊天会话
-- 聊天记录持久化：消息和会话元数据保存在 Supabase 中
-- 安全与限流：校验请求参数，并在 API 层实施基础速率限制
+- 多会话管理：支持创建、切换、删除多个聊天会话
+- 消息持久化：会话和消息保存在 Supabase 中
+- 登录鉴权：使用 Clerk 完成用户身份校验
+- 停止生成：支持中断 AI 输出，并保留已生成内容
+- 超时取消：使用 `AbortController` 级联取消上游请求，避免浪费 Token
+- 安全与限流：Zod 校验请求参数，API 层实施基础速率限制
+- 环境变量校验：启动时用 Zod 校验 `process.env`，缺失即构建失败
 - Markdown 渲染：支持列表、代码块、表格等富文本展示
+- 响应式 UI：适配移动端与桌面端，支持深色模式
 
 ## 技术栈
 
@@ -33,6 +45,36 @@ FlowChat 是一个以聊天为核心的 Web 应用，目标是提供近实时的
 | AI 接口 | SiliconFlow / OpenAI 兼容接口 | 大语言模型调用入口 |
 | 部署 | Vercel | Next.js 项目的推荐托管平台 |
 | 校验 | Zod | 请求参数校验 |
+| 工具 | lodash.throttle、react-markdown | 流式渲染优化与 Markdown 展示 |
+
+## 学习文档
+- [学习过程](docs/learning-log.md)
+- [AI 协作说明](docs/ai-collaboration.md)
+- [部署指南](docs/deployment-vercel.md)
+- [排错指南](docs/troubleshooting.md)
+
+## 架构简述
+
+请求链路如下：
+
+```mermaid
+flowchart LR
+A[前端输入] --> B[hooks/useChatStream]
+B --> C[Next.js API /api/chat]
+C --> D[模型服务]
+C --> E[Supabase 存储]
+E --> F[SSE 流式返回]
+F --> G[UI 增量更新]
+```
+
+核心流程：
+1.前端输入交给 useChatStream 处理。
+2.服务端 API 校验用户身份、请求参数与频率。
+3.服务端调用 AI 模型服务，并以 SSE 流式写回。
+4.系统同时更新 Supabase 中的会话与消息记录。
+5.前端逐块解析，按 token 增量更新 UI。
+
+更完整的部署与排错记录见 (docs/deployment-vercel.md) 和 (docs/troubleshooting.md)
 
 ## 环境变量配置
 
@@ -65,7 +107,7 @@ cp .env.example .env.local
 
 ```bash
 git clone <repository-url>
-cd my-chat
+cd FlowChat
 npm install
 cp .env.example .env.local
 npm run dev
@@ -77,21 +119,12 @@ npm run dev
 http://localhost:3000
 ```
 
-## 架构简述
+推送到远程仓库前，建议先执行：
 
-请求链路如下：
+```bash
+npm run build
+提前拦截 TypeScript 类型错误和构建失败。
 
-```mermaid
-flowchart LR
-A[前端输入] --> B[hooks/useChatStream]
-B --> C[Next.js API /api/chat]
-C --> D[模型服务]
-C --> E[Supabase 存储]
-E --> F[SSE 流式返回]
-F --> G[UI 增量更新]
-```
-
-核心流程为：前端输入交给 hook 处理，服务端 API 负责校验用户身份和请求参数，并将模型输出流式写回；系统同时更新会话与消息记录，最终在前端按 token 追加渲染。
 
 ## 部署说明
 
@@ -105,16 +138,34 @@ F --> G[UI 增量更新]
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `CLERK_SECRET_KEY`
+- `SILICONFLOW_API_KEY`
+- `SILICONFLOW_BASE_URL`
+- `NEXT_PUBLIC_APP_URL`
+- `AI_MODEL（可选）`
+- `AI_MAX_TOKENS（可选）`
+- `AI_TEMPERATURE（可选）`
+- `AI_TOP_P（可选）`
 
 配置完成后，必须执行一次 Redeploy，环境变量修改才会生效。
 
 > 注意：`NEXT_PUBLIC_` 变量会在构建时被内联到前端代码，因此它们需要是公开可见的匿名配置，不能放入高权限秘钥。
+
+## 已知限制
+
+- 内存限流在 Serverless 多实例部署下不共享，仅用于演示；生产环境建议接入 Redis 或 Vercel KV。
+- 单元测试覆盖了核心入参校验（Zod Schema），后续计划补充 API 路由集成测试。
+- 模型输出质量依赖上游 AI 服务。
+- 暂未支持 RAG、Function Calling / Tool Use。
 
 ## 安全声明
 
 - 所有真实密钥仅存于本地 `.env.local` 和 Vercel 后台环境变量中
 - 不提交 `.env.local`、`.env.*.local` 或任何真实凭据到 GitHub
 - 本仓库仅保留示例值或占位符，不包含真实的 Supabase 地址、API Key 或服务端密码
+
 
 ## 许可证
 
