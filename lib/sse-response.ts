@@ -3,7 +3,7 @@ import { StreamProcessor } from "@/lib/stream-processor";
 type SSEOptions = {
   responseBody: ReadableStream<Uint8Array>;
   sessionId: string;
-  saveAiReply: () => Promise<void> | void;
+  saveAiReply: (aiText: string) => Promise<void> | void;  
   clearFirstByteTimeout: () => void;
 };
 
@@ -17,9 +17,12 @@ export function createSSEResponse({
 
   const readableStream = new ReadableStream({
     async start(controller) {
+      let accumulatedText = "";  
+
       const processor = new StreamProcessor(responseBody, {
         onFirstByte: clearFirstByteTimeout,
         onToken: (token: string) => {
+          accumulatedText += token;  
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({ token, sessionId })}\n\n`
@@ -27,13 +30,17 @@ export function createSSEResponse({
           );
         },
         onComplete: async () => {
-          await saveAiReply();
+          await saveAiReply(accumulatedText);  
           controller.close();
         },
         onError: async (err: Error) => {
           clearFirstByteTimeout();
           console.error("流处理错误:", err);
-          await saveAiReply();
+          // 用户中断时，accumulatedText 已有已生成内容，追加中断标记
+          const textToSave = accumulatedText
+            ? accumulatedText + "\n\n[用户已中断]"
+            : "";
+          await saveAiReply(textToSave);  
           try {
             controller.enqueue(
               encoder.encode(

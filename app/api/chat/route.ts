@@ -86,7 +86,6 @@ export async function POST(request: NextRequest) {
 
     // ----- 8. 准备流式处理上下文 -----
     const abortController = new AbortController(); // 用于取消AI请求
-    let fullAiReply = "";// 累积完整回复内容，用于最后存库
     let hasSaved = false;// 防止已保存后重复调用
     let savePromise: Promise<void> | null = null;//防止并发插入
     const sessionIdForSave = activeSessionId;
@@ -101,13 +100,10 @@ export async function POST(request: NextRequest) {
 
     // ----- 10. 监听客户端取消（用户点取消 / 关闭页面）-----
     request.signal.addEventListener("abort", () => {
-      clearFirstByteTimeout();
-      abortController.abort();
-      // 如果已有内容，追加中断标记，告知用户内容被截断
-      if (fullAiReply) {
-        fullAiReply += "\n\n[用户已中断]";
-      }
-    });
+  clearFirstByteTimeout();
+  abortController.abort();
+  // 中断标记现在由 sse-response.ts 的 onError 分支统一处理
+});
 
     // ----- 11. 调用 SiliconFlow AI 接口 -----
     let response;
@@ -149,27 +145,23 @@ export async function POST(request: NextRequest) {
     // 场景：start 正常结束、catch 异常、cancel 回调都可能触发保存
     // 用 savePromise 作为“锁”，只让第一次调用执行，后续复用
     //防止并发插入导致数据重复。
-    const saveAiReply = () => {
-      if (hasSaved || !fullAiReply || !sessionIdForSave) return;
-      // 条件过滤：已存 / 无内容 / 无会话ID → 直接返回
+    const saveAiReply = (aiText: string) => {
+  if (hasSaved || !aiText || !sessionIdForSave) return;
 
-      // 核心防竞态：如果已有正在执行的保存任务，直接复用
-      savePromise ??= (async () => {
-        try {
-          // 1. 存 AI 回复到数据库
-          await insertAssistantMessage(sessionIdForSave, fullAiReply);
-          // 2. 如果标题为空，自动生成标题
-          await tryUpdateSessionTitle(sessionIdForSave, fullAiReply);
-          hasSaved = true; // 标记已存
-        } catch (saveError) {
-          console.error("保存AI消息抛出异常:", saveError);
-        } finally {
-          savePromise = null;// 解锁，允许下次保存
-        }
-      })();
+  savePromise ??= (async () => {
+    try {
+      await insertAssistantMessage(sessionIdForSave, aiText);
+      await tryUpdateSessionTitle(sessionIdForSave, aiText);
+      hasSaved = true;
+    } catch (saveError) {
+      console.error("保存AI消息抛出异常:", saveError);
+    } finally {
+      savePromise = null;
+    }
+  })();
 
-      return savePromise;
-    };
+  return savePromise;
+};
 
     // ----- 14. 创建 SSE 流并返回响应 ----
     return createSSEResponse({
