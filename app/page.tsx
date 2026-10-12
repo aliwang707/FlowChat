@@ -1,6 +1,6 @@
 'use client';
 import { SignInButton, useUser } from '@clerk/nextjs';
-import { useEffect, useState, useCallback,useRef } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useDarkMode } from '@/hooks/useDarkMode';
 import { useSessions } from '@/hooks/useSessions';
 import { useChatStream, Message } from '@/hooks/useChatStream';
@@ -31,26 +31,26 @@ export default function Home() {
     (id) => {
       setCurrentSessionId(id);
       localStorage.setItem('currentChatSessionId', id);
-      handleRefreshSessions(); 
+      handleRefreshSessions();
     },
     handleRefreshSessions
   );
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const sessionRequestIdRef = useRef(0); 
+  const sessionRequestIdRef = useRef(0);
 
 
 
- 
+
   useEffect(() => {
-  if (!isSignedIn) return;
-  (async () => {
-    await loadSessions(true);
-    createNewSession();
-    setMessages([]);
-  })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [isSignedIn]);
+    if (!isSignedIn) return;
+    (async () => {
+      await loadSessions(true);
+      createNewSession();
+      setMessages([]);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSignedIn]);
 
   const handleNewSession = () => {
     createNewSession();
@@ -60,24 +60,24 @@ export default function Home() {
   };
 
   const handleSelectSession = async (id: string) => {
-  sessionRequestIdRef.current += 1;
-  const currentRequestId = sessionRequestIdRef.current;
+    sessionRequestIdRef.current += 1;
+    const currentRequestId = sessionRequestIdRef.current;
 
-  setMessages([]);
-  const list = await loadSessionMessages(id, true);
-  if (currentRequestId !== sessionRequestIdRef.current) return;
+    setMessages([]);
+    const list = await loadSessionMessages(id, true);
+    if (currentRequestId !== sessionRequestIdRef.current) return;
 
-  if (list) setMessages(list as Message[]);
-  resetChat();
-  setSidebarOpen(false);
-};
+    if (list) setMessages(list as Message[]);
+    resetChat();
+    setSidebarOpen(false);
+  };
 
   const handleDeleteConfirm = async (id: string) => {
     await deleteSession(id, true, currentSessionId, () => {
       createNewSession();
       setMessages([]);
     });
-    setDeleteConfirm(null); 
+    setDeleteConfirm(null);
   };
 
   if (!isSignedIn) {
@@ -117,7 +117,7 @@ export default function Home() {
             id={deleteConfirm.id}
             title={deleteConfirm.title}
             onCancel={() => setDeleteConfirm(null)}
-            onConfirm={handleDeleteConfirm} 
+            onConfirm={handleDeleteConfirm}
           />
         )}
 
@@ -156,7 +156,7 @@ export default function Home() {
               loadingMessages={loadingMessages}
               loading={loading}
               onSelectQuickQuestion={(q) => handleSubmit(q)}
-              messagesEndRef={messagesEndRef}
+              
             />
             {loading && !isStreaming && (
               <div className="animate-pulse p-4 text-gray-500 dark:text-gray-400">
@@ -168,12 +168,12 @@ export default function Home() {
                 ❌ 请求失败，请检查网络后重试
               </div>
             )}
+             <div ref={messagesEndRef} />
           </div>
           <div className="relative z-20 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700">
             <ChatInput input={input} setInput={setInput} loading={loading} onSubmit={() => handleSubmit()} onCancel={handleCancel} />
           </div>
         </div>
       </div>
-    </ChatErrorBoundary>
-  );
+    </ChatErrorBoundary>);
 }

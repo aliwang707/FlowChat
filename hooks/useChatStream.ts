@@ -47,8 +47,8 @@ export function useChatStream(
   }, [messages]);
 
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, []);
+  messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+}, []);
 
   useEffect(() => {
     scrollToBottom();

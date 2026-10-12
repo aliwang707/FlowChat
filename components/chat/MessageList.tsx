@@ -10,10 +10,9 @@ type Props = {
   loadingMessages: boolean;
   loading: boolean;
   onSelectQuickQuestion: (q: string) => void;
-  messagesEndRef: React.RefObject<HTMLDivElement | null>;
 };
 
-export const MessageList = ({ messages, loadingMessages, loading, onSelectQuickQuestion, messagesEndRef }: Props) => {
+export const MessageList = ({ messages, loadingMessages, loading, onSelectQuickQuestion }: Props) => {
   const copyToClipboard = async (content: string) => {
     try { await navigator.clipboard.writeText(content); toast.success('已复制到剪贴板'); }
     catch { toast.error('复制失败，请手动复制'); }
@@ -32,9 +31,9 @@ export const MessageList = ({ messages, loadingMessages, loading, onSelectQuickQ
   return (
     <div
       className={`
-        flex-1 overflow-y-auto p-4 sm:p-6 pb-20 
-        ${messages.length === 0 ? 'flex flex-col items-center justify-center h-full' : 'space-y-6'}
-      `}
+  p-4 sm:p-6 pb-4
+  ${messages.length === 0 ? 'flex flex-col items-center justify-center min-h-full' : 'space-y-6'}
+`}
       role="log"
       aria-live="polite"
       aria-label="聊天消息记录"
@@ -52,8 +51,8 @@ export const MessageList = ({ messages, loadingMessages, loading, onSelectQuickQ
           <div key={msg.id} className={`group flex items-start gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {msg.role === 'assistant' && (
               <div className="w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center shrink-0 text-xs mt-1">
-  🤖
-</div>
+                🤖
+              </div>
             )}
             <div className={`
               rounded-2xl px-4 sm:px-5 py-3 
@@ -85,7 +84,7 @@ export const MessageList = ({ messages, loadingMessages, loading, onSelectQuickQ
           </div>
         ))
       )}
-      <div ref={messagesEndRef} />
+
     </div>
   );
 };
