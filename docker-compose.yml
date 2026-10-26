@@ -1,0 +1,27 @@
+version: '3.8'
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: flowchat_db
+    ports:
+      - "3306:3306"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/flowchat_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=root
+    depends_on:
+      - mysql
+
+  frontend:
+    build: ./flowchat-vue
+    ports:
+      - "80:80"
+    depends_on:
+      - backend

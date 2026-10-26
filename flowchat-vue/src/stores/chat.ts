@@ -1,6 +1,6 @@
 import { defineStore } from "pinia"
 import { ref, computed } from "vue"
-
+import axios from 'axios'
 
 export interface Message {
     id: number
@@ -56,14 +56,30 @@ export const useChatStore = defineStore('chat', () => {
 async function loadMessages(sessionId:number) {
     const token=++fetchToken
     loading.value=true
-    const msgs=await mockFetchMessages(sessionId)
+    
+    try{
+        // 请求真实的数据库接口
+      const res = await axios.get(`http://localhost:8080/api/chat/history?sessionId=${sessionId}`)
 
     // 竞态校验：如果响应回来时已有更新的请求，丢弃本次结果
     if(token!==fetchToken) return
 
     const session=sessions.value.find((s)=>s.id===sessionId)
-    if(session)session.messages=msgs
-    loading.value=false
+    if(session){
+        session.messages=res.data.data.map((item:any)=>({id:item.id,text:item.content}))
+    }
+    
+    }catch(error){
+        console.error("请求失败", error)
+    }finally{
+        if(token===fetchToken){
+            loading.value=false
+        }
+    }
+
+    
+
+    
     
 }
 

@@ -1,16 +1,22 @@
 ﻿# FlowChat
 
-一个基于 Next.js 的全栈 AI 聊天应用，支持 SSE 流式对话、多会话管理、Clerk 登录鉴权、Supabase 消息持久化与 Vercel 部署。
+一个全栈 AI 聊天应用。本仓库包含两个版本：
+
+- main 分支：生产环境版本，基于 Next.js + Supabase + Vercel 的 Serverless 极速上线架构，支持 SSE 流式对话、多会话管理、Clerk 登录鉴权、Supabase 消息持久化与 Vercel 部署。
+
+- vue-rewrite 分支：重构进阶版本，基于 Vue 3 + Spring Boot + MySQL 的企业级前后端分离架构，并包含 Docker 部署配置。
 
 - 🔗 Demo: https://flowchat.boleit.cn/ （自定义域名已绑定）
 - 📦 仓库: https://github.com/aliwang707/FlowChat
 - 📄 排错记录: [docs/troubleshooting.md](docs/troubleshooting.md)
 
+> 注意：flowchat-vue/、backend/、docker-compose.yml 仅存在于 vue-rewrite 分支，main 分支不包含这些目录。
+
 ## 项目简介
 
-FlowChat 是一个以聊天为核心的全栈 Web 应用，目标是提供近实时的 AI 对话体验，并将会话内容、访问控制、接口安全与生产部署一并纳入工程设计。
+FlowChat 是一个以聊天为核心的全栈 Web 应用。项目在 `main` 分支实现了基于 Serverless 架构的极速上线体验；同时在 `vue-rewrite` 分支中，为了贴合企业级开发场景，使用了 Vue 3 + TypeScript + Spring Boot + MySQL 进行了前后端分离架构的完全重构。
 
-项目适合用于个人助手、知识问答、聊天机器人原型等场景，也可以作为 Next.js + AI 应用的学习与展示项目。
+项目适合用于个人助手、知识问答、聊天机器人原型等场景，也可以作为全栈技术演进的学习与展示项目。
 
 
 ## 界面预览
@@ -35,6 +41,7 @@ FlowChat 是一个以聊天为核心的全栈 Web 应用，目标是提供近实
 
 ## 技术栈
 
+以下为 main 分支技术栈，具体版本以 package.json 为准。
 | 类别 | 技术项 | 说明 |
 | --- | --- | --- |
 | 框架 | Next.js 16 | App Router 与服务端 API 能力 |
@@ -123,6 +130,7 @@ http://localhost:3000
 
 ```bash
 npm run build
+
 提前拦截 TypeScript 类型错误和构建失败。
 
 
@@ -165,6 +173,51 @@ npm run build
 - 所有真实密钥仅存于本地 `.env.local` 和 Vercel 后台环境变量中
 - 不提交 `.env.local`、`.env.*.local` 或任何真实凭据到 GitHub
 - 本仓库仅保留示例值或占位符，不包含真实的 Supabase 地址、API Key 或服务端密码
+
+## 重构版本（Vue 3 + Java）说明
+
+> 本节内容仅适用于 vue-rewrite 分支。main 分支不包含 flowchat-vue/、backend/ 和 docker-compose.yml。
+
+在 `vue-rewrite` 分支中，将原有的 Next.js 全栈架构拆分，采用经典的 Vue 3 前端 + Spring Boot 后端 + MySQL 数据库 架构重写，并加入了 Docker 部署配置。
+
+### 重构版技术栈
+- 前端：Vue 3, TypeScript, Pinia (状态管理), Vue Router, Axios
+- 后端：Java 17, Spring Boot, MyBatis-Plus, Lombok
+- 数据库：MySQL 8.0
+- 部署：Docker, Docker Compose
+
+### 重构版核心亮点
+- 前后端分离架构：前端专注 UI 与交互，后端提供 RESTful API，实现逻辑解耦。
+- 并发竞态修复：引入请求令牌（Token）机制，彻底解决“快速切换会话导致旧请求覆盖新数据”的异步竞态 Bug。
+- 数据持久化：通过 MyBatis-Plus 操作 MySQL，实现真实的消息表结构与增删改查。
+- 跨域与统一响应：后端通过 `@CrossOrigin` 解决跨域问题，并采用标准 JSON 结构 `{code, msg, data}` 响应。
+- 容器化部署：编写 `Dockerfile` 与 `docker-compose.yml`，实现 MySQL、后端、前端的自动化编排。
+
+### 重构版目录结构
+
+```text
+├── flowchat-vue/    # Vue 3 前端项目
+├── backend/         # Spring Boot 后端项目
+└── docker-compose.yml # 容器编排配置
+
+## 重构版运行指南
+
+1.启动后端：
+确保本地 MySQL 已启动，并在 backend/src/main/resources/application.properties 配置数据库连接。然后执行：
+
+bash
+cd backend
+./mvnw spring-boot:run
+2.启动前端：
+
+bash
+cd flowchat-vue
+npm install
+npm run dev
+3.Docker 一键部署（可选）：
+
+bash
+docker-compose up -d
 
 
 ## 许可证
