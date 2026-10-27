@@ -13,17 +13,7 @@ export interface Session {
     messages: Message[]
 }
 
-// 模拟后端接口：根据 sessionId 返回该会话的消息，延迟随机 100~800ms
-function mockFetchMessages(sessionId:number):Promise<Message[]>{
-    return new Promise((resolve)=>{
-        const delay=100+Math.random()*700
-        setTimeout(()=>{
-            resolve([
-                {id:sessionId*100+1,text:`服务端：会话 ${sessionId} 的消息 1`},{ id: sessionId * 100 + 2, text: `服务端：会话 ${sessionId} 的消息 2` },
-            ])
-        },delay)
-    })
-}
+
 
 export const useChatStore = defineStore('chat', () => {
     //state
