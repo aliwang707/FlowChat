@@ -1,0 +1,126 @@
+:root {
+  --primary: #155dfc;   
+  --bg: #f7f7f8;        
+  --text: #1f2328;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --bubble: #ffffff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+
+.session-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.session-item {
+  padding: 14px 16px;
+  margin-bottom: 8px;
+  background: var(--bubble);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.session-item:hover {
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+
+.session-meta {
+  color: var(--muted);
+  font-size: 13px;
+  margin-left: 8px;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.back-btn {
+  border: 1px solid var(--border);
+  background: var(--bubble);
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.message-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 120px;
+}
+
+.message {
+  padding: 10px 14px;
+  background: var(--bubble);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-width: 80%;
+  align-self: flex-start;
+}
+
+.loading {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+}
+
+.composer input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+}
+
+.composer input:focus {
+  border-color: var(--primary);
+}
+
+.send-btn {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  cursor: pointer;
+}
+
+.send-btn:hover {
+  opacity: 0.9;
+}
